@@ -1,0 +1,98 @@
+{
+  "id": "baseline",
+  "title": "Baseline: is the server up, locked and honest?",
+  "summary": "Checks that need no test partner. They prove the FHIR server answers, that the doors that should be locked are locked, that the ones that should be open are open, and that the server advertises the right addresses to testers.",
+  "learn": "A FHIR server is just a web server that speaks a standard dialect. Before testing any clinical workflow, a good client first asks: what are you (the CapabilityStatement), who may talk to you (authentication), and where should I send follow-up requests (discovery documents). These steps do exactly that.",
+  "steps": [
+    {
+      "id": "B01",
+      "title": "The server describes itself (CapabilityStatement)",
+      "expect": "GET /fhir/metadata works without a token and returns a CapabilityStatement for FHIR R4.",
+      "why": "Every FHIR server must publish a CapabilityStatement at /metadata. It lists the resource types and operations the server supports and the FHIR version it speaks. Clients read it first to learn what they can do. It is deliberately open so a client can discover the server before it has credentials. This server speaks FHIR R4 (version 4.0.1)."
+    },
+    {
+      "id": "B02",
+      "title": "Reading patient data without a token is refused",
+      "expect": "GET /fhir/Patient with no Authorization header returns 401 and a WWW-Authenticate: Bearer challenge.",
+      "why": "Patient is a FHIR resource type: one kind of record. Searching /fhir/Patient asks for patient records. Even in a test server you do not want strangers reading or filling it, so everything except /metadata needs a bearer token. HTTP status 401 means 'who are you?'. The WWW-Authenticate header tells the client which kind of credential to send."
+    },
+    {
+      "id": "B03",
+      "title": "Reading with the right token works",
+      "expect": "GET /fhir/Patient?_count=1 with the correct bearer token returns 200 and a Bundle.",
+      "why": "A bearer token is a secret string sent in the Authorization header as 'Bearer <token>'. Anyone holding it is treated as authorised. A FHIR search always returns a Bundle: a container holding zero or more resources plus paging information. _count=1 asks for at most one result per page, which keeps the response small."
+    },
+    {
+      "id": "B04",
+      "title": "A wrong token is refused",
+      "expect": "A request with an incorrect bearer token returns 401.",
+      "why": "Checking that the right token works is only half the test. A server that accepted any token, or one that only checked the first few characters, would pass B03 and still be wide open. This step sends a token that is deliberately wrong."
+    },
+    {
+      "id": "B05",
+      "title": "Writing without a token is refused (and stores nothing)",
+      "expect": "POST /fhir/Patient with no token returns 401.",
+      "why": "Reading and writing are separate risks. In FHIR, POST to a resource type creates a record. The request body deliberately names the wrong resource type, so even a badly configured open server would reject it without storing anything. Running this test can never put data on your server."
+    },
+    {
+      "id": "B06",
+      "title": "The organiser API needs the token",
+      "expect": "GET /ode/health with no token returns 401.",
+      "why": "Besides the plain FHIR server, this deployment runs a second service called the facade. It sends test referrals to partners and serves their images. Its organiser endpoints, which live under /ode, can send data to other organisations, so they are locked behind the same shared token."
+    },
+    {
+      "id": "B07",
+      "title": "The facade is running and reachable",
+      "expect": "GET /ode/health with the token returns 200 and {status: ok, service: ohia-facade}.",
+      "why": "The proxy in front of the stack (Caddy) forwards /fhir to the FHIR server and /ode and /arex to the facade. If the facade container is down, the proxy answers 502 for those paths but /fhir keeps working. This step tells you which situation you are in."
+    },
+    {
+      "id": "B08",
+      "title": "Discovery document points testers to the right place",
+      "expect": "GET /arex/.well-known/smart-configuration returns 200. Its token_endpoint starts with this server's public address, ends in /arex/auth/token, and it lists client_credentials, private_key_jwt and RS384.",
+      "why": "A discovery document is a small JSON file at a well-known address that tells a client where to go next, so nobody has to hard-code addresses. ARex (the image-sharing standard used here) borrows SMART's discovery document. The most common real-world fault is a document that advertises localhost or an old hostname because the server's public address was never configured. A tester following it would silently fail."
+    },
+    {
+      "id": "B09",
+      "title": "The published signing key is public only",
+      "expect": "GET /arex/jwks.json returns an RSA key set that contains no private key material.",
+      "why": "To prove who it is, this server signs a short document (a JWT) with a private key. Partners verify the signature using the matching public key, which is published as a JWKS (JSON Web Key Set). The public half is safe to share. If any private field (d, p, q, dp, dq, qi) ever appears here, anyone could impersonate the server and the key must be replaced at once."
+    },
+    {
+      "id": "B10",
+      "title": "The token endpoint only accepts the grant it should",
+      "expect": "POST /arex/auth/token with grant_type=password returns 400 and the OAuth error unsupported_grant_type.",
+      "why": "OAuth defines several ways to get a token (grants). Machine-to-machine access like this uses client_credentials. Refusing everything else, with the standard error code, is both a security rule and what a well-behaved client library expects to see."
+    },
+    {
+      "id": "B11",
+      "title": "A forged identity proof is refused",
+      "expect": "POST /arex/auth/token with a garbage client_assertion returns 401 and the OAuth error invalid_client.",
+      "why": "A real client authenticates by sending a JWT signed with its private key (this is called private_key_jwt). A forged or malformed one must be rejected, and with the same error whatever the reason, so an attacker learns nothing about what was nearly right. The later UC07 and UC04a cases send real, correctly signed assertions."
+    },
+    {
+      "id": "B12",
+      "title": "Image content cannot be fetched without an ARex token",
+      "expect": "GET /arex/List/does-not-exist with no token returns 401 with a Bearer error=\"invalid_token\" challenge.",
+      "why": "ARex shares images through a manifest, a FHIR List that names each image and its checksum, and the image bytes themselves. Both are protected by the short-lived tokens issued at the token endpoint, not by the shared organiser token. With no token, the answer is 401, never a hint about what exists."
+    },
+    {
+      "id": "B13",
+      "title": "The results viewer page is hardened",
+      "expect": "GET /viewer/ returns 200 with a strict Content-Security-Policy, X-Frame-Options: DENY, nosniff and no-store.",
+      "why": "The viewer displays content that a sender controls, such as file names and notes inside referrals. Treating that as untrusted is basic web security. The Content-Security-Policy header tells the browser to run only the page's own scripts and load nothing from elsewhere, and the other headers stop the page being framed or cached."
+    },
+    {
+      "id": "B14",
+      "title": "The server states its identity for partners",
+      "expect": "GET /ode/identity returns a client_id, signing_algorithm RS384 and a jwks_uri that points at this server's /arex/jwks.json.",
+      "why": "When this server pulls images from a partner, the partner needs to know our client id and where to find our public key before they will trust us. This endpoint gives the organiser those details to hand over."
+    },
+    {
+      "id": "B15",
+      "title": "Internal endpoints are not on the internet",
+      "expect": "GET /internal/health through the public address does not reach the facade's own health endpoint.",
+      "why": "The facade has an endpoint meant only for Docker's health probe. The proxy must not forward it. The proxy only exposes /ode, /arex and /viewer to the facade, so this should always pass; it exists to catch a future routing change that exposes too much."
+    }
+  ]
+}
