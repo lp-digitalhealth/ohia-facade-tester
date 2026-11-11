@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
+
+from tests import patient_access_model as pam
 
 TOKEN = "unit-test-token-0123456789abcdef"
 
@@ -19,6 +21,7 @@ class FakeServer:
     def __init__(self, **modes: bool) -> None:
         self.modes = modes
         outer = self
+        self.pa = pam.build(drop_preauth=modes.get("pa_no_preauth", False), dangling_insurer=modes.get("pa_dangling", False))
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):  # silence
@@ -47,6 +50,60 @@ class FakeServer:
             def do_POST(self):
                 self._route("POST")
 
+            def do_OPTIONS(self):
+                self._route("OPTIONS")
+
+            def _patient_access(self, method, path, public):
+                m = outer.modes
+                rest = path[len("/patient-access/fhir"):]
+                cors = {} if m.get("pa_no_cors") else {"Access-Control-Allow-Origin": "*"}
+                if method == "OPTIONS":
+                    if m.get("pa_preflight_needs_token") and not self._authed():
+                        return self._unauth()
+                    return self._send(204, b"", {**cors, "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept",
+                                                 "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS"})
+                if rest == "/metadata" and method == "GET":
+                    types = ["Patient", "Coverage", "Organization", "Practitioner", "ExplanationOfBenefit"]
+                    codes = ["read", "search-type"] + (["create"] if m.get("pa_write_capability") else [])
+                    return self._send(200, {"resourceType": "CapabilityStatement", "fhirVersion": "4.0.1",
+                                            "implementationGuide": ["http://hl7.org/fhir/us/carin-bb/ImplementationGuide/hl7.fhir.us.carin-bb|2.2.0"],
+                                            "rest": [{"mode": "server", "resource": [{"type": t, "interaction": [{"code": c} for c in codes]} for t in types]}]})
+                if not self._authed() and not m.get("pa_open"):
+                    if m.get("pa_plain_401"):
+                        return self._send(401, b"Unauthorized", {"WWW-Authenticate": "Bearer"}, "text/plain")
+                    return self._send(401, {"resourceType": "OperationOutcome", "issue": [{"severity": "error", "code": "login"}]},
+                                      {"WWW-Authenticate": "Bearer", **cors}, "application/fhir+json")
+                if method == "POST":
+                    if m.get("pa_writable"):
+                        return self._send(201, {"resourceType": "Patient"})
+                    return self._send(405, {"status": 405, "error": "Method Not Allowed"})
+                pieces = [x for x in rest.split("/") if x]
+                query = parse_qs(urlsplit(self.path).query)
+                if len(pieces) == 2:
+                    found = outer.pa.get("/".join(pieces)) if not m.get("pa_not_loaded") else None
+                    if found is None and m.get("pa_missing_is_ok"):
+                        return self._send(200, {"resourceType": "Bundle", "type": "searchset", "total": 0}, cors)
+                    if found is None:
+                        return self._send(404, {"resourceType": "OperationOutcome", "issue": [{"severity": "error", "code": "not-found"}]}, cors)
+                    return self._send(200, found, cors)
+                if len(pieces) != 1:
+                    return self._send(404, {"resourceType": "OperationOutcome"}, cors)
+                if m.get("pa_ignores_params") and any(k not in ("identifier", "patient", "beneficiary", "service-date") for k in query):
+                    return self._send(200, {"resourceType": "Bundle", "type": "searchset", "total": 0}, cors)
+                if m.get("pa_ignores_dates"):
+                    query.pop("service-date", None)
+                status, body = pam.search({} if m.get("pa_not_loaded") else outer.pa, pieces[0], query)
+                if status == 200 and m.get("pa_not_loaded"):  # as the real base: validated first, then says nothing is loaded
+                    body["entry"] = [{"resource": {"resourceType": "OperationOutcome", "issue": [{"severity": "information", "code": "informational",
+                                      "details": {"text": "The payer-side data is not loaded yet. An organizer loads it with POST /ode/admin/seed-patient-access."}}]}, "search": {"mode": "outcome"}}]
+                host = "http://localhost" if m.get("pa_localhost") else public
+                for e in body.get("entry", []):
+                    r = e["resource"]
+                    if "id" not in r:
+                        continue
+                    e["fullUrl"] = f"{host}/patient-access/fhir/{r['resourceType']}/{r['id']}"
+                return self._send(status, body, cors)
+
             def _route(self, method):
                 m = outer.modes
                 path = self.path.split("?")[0]
@@ -55,6 +112,8 @@ class FakeServer:
                 base = f"http://127.0.0.1:{outer.port}"
                 public = "http://localhost" if m.get("localhost") else base
 
+                if path.startswith("/patient-access/fhir"):
+                    return self._patient_access(method, path, base)
                 if path == "/fhir/metadata" and method == "GET":
                     return self._send(200, {"resourceType": "CapabilityStatement", "fhirVersion": "4.0.1"})
                 if path.startswith("/fhir"):

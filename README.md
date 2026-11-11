@@ -15,6 +15,7 @@ It is deployed **separately** from the server it tests.
 |---|---|
 | Runner, report format, redaction | Built, unit tested |
 | `baseline` case (15 steps) | Built. Steps B06 to B14 verified against the real facade code running locally. B01 to B05 and B15 need the real proxy and HAPI and have **not** been run against them |
+| `patient-access` case (15 steps, UC07 interaction 6) | Built. Run against the real facade jar with the real data on one machine: 15 of 15 pass once the data is loaded. **Not** run through the real proxy (Caddy) or on a deployed server |
 | UC07 and UC04a cases (need a public receiver) | Not built yet |
 | Receiver, teaching site, GitHub Actions, second-VM automation | Not built yet |
 
@@ -30,10 +31,20 @@ python -m tester run --case baseline --out results.json
 
 Exit code 0 = every step passed, 1 = a step failed, 2 = bad configuration.
 
+### The `patient-access` case
+
+Plays a patient app against the server's `/patient-access/fhir` base (CARIN Blue Button 2.2.0): find the member by the payer online member ID, then read coverage and the two claims. It needs the server release that has that base (`ohia-fhir-test-server`, draft PR 39) and the payer-side data **loaded by the organizer** (`POST /ode/admin/seed-patient-access`). The tester never loads data. If it is not loaded, the lookups fail with a message that says so.
+
+```bash
+python -m tester run --case patient-access --out results.json
+```
+
+It checks the member by business keys that the data repository defines for UC07 (the payer online ID, the Medicaid beneficiary ID, the claim numbers and the pre-authorization number). If those change in `ohia-test-data`, update the constants at the top of `tester/checks/patient_access.py`.
+
 ## Safety
 
 - The token is read from the environment only and is replaced by `***` everywhere in the report, including inside response bodies.
-- Checks are read-only. The one write-style probe (B05) is built so that even a wrongly open server stores nothing.
+- Checks are read-only. The write-style probes (B05, P15) are built so that even a wrongly open server stores nothing.
 - Reports name the target host only.
 
 ## Tests
