@@ -1,0 +1,98 @@
+{
+  "id": "patient-access",
+  "title": "Patient access: a patient app reads the payer's claims (UC07 interaction 6)",
+  "summary": "Plays a patient-facing app against the server's separate patient-access FHIR base. The app finds the member with the payer's online member ID, then reads the coverage and the two adjudicated dental claims, as CARIN Blue Button 2.2.0 resources. Everything here is read-only.",
+  "learn": "When a patient uses an app to see their own insurance claims, the app talks to the payer's FHIR server. The app does not know the payer's internal record ids. It knows something the patient has: an online member ID. So the flow is always: find the member by that ID, then ask for their coverage and claims. The records come as CARIN Blue Button resources, a US standard for what a payer shares with a patient. Matching these payer records to the dentist's own records is the app's job and uses business keys (the Medicaid beneficiary ID, the claim and pre-authorization numbers), never the record ids, because each side keeps its own copy with its own ids. These steps need the payer-side data to be loaded by the organizer first.",
+  "steps": [
+    {
+      "id": "P01",
+      "title": "The patient-access server describes itself",
+      "expect": "GET /patient-access/fhir/metadata works without a token and returns an R4 CapabilityStatement that names CARIN Blue Button 2.2.0 and offers only read and search for Patient, Coverage, Organization, Practitioner and ExplanationOfBenefit.",
+      "why": "A patient app reads the CapabilityStatement first to learn what the server can do. This one is open on purpose, so an app can discover the server before it has credentials. It must not promise writing: a payer lets a patient look at claims, not change them. So any create, update or delete in the list is a finding. The statement also names the Implementation Guide and version (Blue Button 2.2.0) the data follows."
+    },
+    {
+      "id": "P02",
+      "title": "Reading claims without a token is refused",
+      "expect": "GET /patient-access/fhir/Patient with no Authorization header returns 401 with a Bearer challenge and an OperationOutcome.",
+      "why": "Claims are the most sensitive thing a patient app touches, so only the metadata is open. A FHIR server explains an error with an OperationOutcome, a small JSON resource that holds the problem. The WWW-Authenticate header tells the app which kind of credential to send. Today the credential is a shared test token. A real deployment would use SMART login for each patient."
+    },
+    {
+      "id": "P03",
+      "title": "A wrong token is refused",
+      "expect": "A request with an incorrect bearer token returns 401.",
+      "why": "Accepting the right token is only half the test. A server that accepted any token would pass the next steps and still be wide open, so this step sends one that is deliberately wrong."
+    },
+    {
+      "id": "P04",
+      "title": "A browser app can ask permission first (CORS preflight)",
+      "expect": "OPTIONS /patient-access/fhir/Patient with an Origin header and no token returns a success status with an Access-Control-Allow-Origin header, and allows the Authorization header.",
+      "why": "Many patient apps run in a web browser. A browser will not let a page call another website unless that website agrees, and it checks by first sending an OPTIONS request called a preflight. A preflight never carries your token, so if the server demands one the browser blocks every real request and the app just shows 'network error'. The real request after it still needs the token (step P02). This is the most common reason a browser app works in a script and fails in the browser."
+    },
+    {
+      "id": "P05",
+      "title": "Find the member with the payer's online member ID",
+      "expect": "GET /patient-access/fhir/Patient?identifier=https://dentaquest.example.org/fhir/online-id|DQ-ONLINE-TX-0038211 returns a Bundle with exactly one Blue Button 2.2.0 Patient, and the links in the Bundle point at this server's public address.",
+      "why": "An identifier in FHIR is a pair: a system (who issued it) and a value. Searching for 'system|value' means 'the member this payer knows by this ID'. A patient app only has the ID the patient typed in or was given, never the payer's internal record id, so this search is the front door. If the Bundle is empty with a note that nothing is loaded, the organizer has not loaded the payer data yet. The links in a Bundle (fullUrl) must start with the server's public address: a link to localhost works on the developer's machine and nowhere else."
+    },
+    {
+      "id": "P06",
+      "title": "The Medicaid beneficiary ID finds the same member",
+      "expect": "GET /patient-access/fhir/Patient?identifier=http://texas.medicaid.gov/beneficiary|TX-MCD-0038211 returns the same Patient as step P05.",
+      "why": "One person has several IDs. The Medicaid beneficiary ID is the one the dentist's system also holds, so it is how an app matches the payer's record to the dentist's record. Both copies of the member must carry it, because each side keeps its own resource with its own record id and the only thing they share is the business key."
+    },
+    {
+      "id": "P07",
+      "title": "Read the Patient by its id",
+      "expect": "GET /patient-access/fhir/Patient/{id} returns the same Patient that the search found, carrying both identifiers.",
+      "why": "Search finds records and read gets one by its id. The id is only meaningful on this server. The app learns it from the search result and uses it for the rest of the session. It is not the same as the Medicaid ID, and it differs on the dentist's server."
+    },
+    {
+      "id": "P08",
+      "title": "A record that does not exist is a clean 404",
+      "expect": "GET /patient-access/fhir/Patient/no-such-patient returns 404 with an OperationOutcome.",
+      "why": "An app needs to tell 'there is nothing here' apart from 'I am not allowed' (401) and 'the server is broken' (5xx). FHIR's answer for a missing record is 404 plus an OperationOutcome that says why."
+    },
+    {
+      "id": "P09",
+      "title": "Read the member's coverage",
+      "expect": "GET /patient-access/fhir/Coverage?beneficiary=Patient/{id} returns one Blue Button 2.2.0 Coverage whose beneficiary is the Patient from step P05.",
+      "why": "Coverage is the insurance policy: who is covered, by whom, and for what period. The beneficiary is the covered person, and this reference is how the coverage is tied to the member. A reference like Patient/abc is relative to this server."
+    },
+    {
+      "id": "P10",
+      "title": "Read the member's two claims (ExplanationOfBenefit)",
+      "expect": "GET /patient-access/fhir/ExplanationOfBenefit?patient={id} returns two Blue Button 2.2.0 oral claims, each with a status, a patient reference to the member, an insurer, a provider and a claim number.",
+      "why": "An ExplanationOfBenefit (EOB) is the payer's statement of how it handled one claim: what was billed, what it paid, and what the patient owes. The oral profile adds dental detail. It is the record a patient app exists to show. Here there are two adjudicated claims, one for the pediatric evaluation and one for the restorative treatment. The claim number (a business key) is what lets the app match each EOB to the dentist's own record of the same visit."
+    },
+    {
+      "id": "P11",
+      "title": "The claims carry the amounts and the pre-authorization number",
+      "expect": "Each EOB has total amounts for submitted and benefit in US dollars, with benefit not above submitted, and the restorative EOB carries the pre-authorization number TX-DQ-PA-2026-061204.",
+      "why": "A patient wants to know what was billed and what the plan covered. The EOB total lists amounts by category: submitted is what the dentist charged and benefit is what the plan allowed to pay. The pre-authorization number links the claim back to the approval that came before the treatment. It is the key that ties the claim to the prior authorization, which makes it the second business key, after the Medicaid ID. The amounts are synthetic."
+    },
+    {
+      "id": "P12",
+      "title": "Search claims by service date",
+      "expect": "GET /patient-access/fhir/ExplanationOfBenefit?patient={id}&service-date=ge2026-07-22 returns only the restorative claim.",
+      "why": "A real app does not download every claim, it asks for a period. FHIR dates in a search take a prefix: ge means 'on or after' and gt 'after', le and lt the other way, eq an exact match. A date like 2026-07-22 stands for the whole day. The pediatric evaluation was on 2026-07-08 and the restorative treatment on 2026-07-22, so this query must keep the second and leave out the first."
+    },
+    {
+      "id": "P13",
+      "title": "Every reference in a claim can be followed",
+      "expect": "The insurer, provider and care-team references of both EOBs, and the coverage and patient they point at, all read as 200 on this server with the type the reference names.",
+      "why": "A claim does not repeat the practitioner's name or the insurer's address. It points to them with a reference such as Practitioner/abc. An app follows each reference with one more read. A reference that returns 404 leaves a hole in the screen where a provider's name should be. That would be a data problem on the server, but it is the app that shows it."
+    },
+    {
+      "id": "P14",
+      "title": "A search the server does not understand is refused, not ignored",
+      "expect": "GET /patient-access/fhir/Patient?favourite-colour=blue returns 400 with an OperationOutcome that names the parameter.",
+      "why": "If a server quietly ignores a search parameter it does not know, a query for 'patients named Smith' returns every patient and the app shows the wrong person's claims. Refusing the query with a clear message is the safe behavior. Note that FHIR lets a client ask for strict handling with a header, but here the server is strict by default."
+    },
+    {
+      "id": "P15",
+      "title": "Writing is refused",
+      "expect": "POST /patient-access/fhir/Patient with the token returns 403 or 405, and creates nothing.",
+      "why": "The patient-access base is for looking, not for changing. The body deliberately names the wrong resource type, so even a wrongly open server would reject it and store nothing. Running this step can never put data on your server."
+    }
+  ]
+}

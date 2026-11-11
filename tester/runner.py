@@ -31,6 +31,7 @@ class Context:
     def __init__(self, cfg: Config, http: HttpClient) -> None:
         self.cfg = cfg
         self.http = http
+        self.state: dict[str, Any] = {}  # lets a later step reuse what an earlier one found, for one run
 
     def call(self, method: str, path: str, *, auth: bool = False, bearer: str | None = None,
              headers: dict[str, str] | None = None, body: bytes | str | None = None) -> Exchange:
