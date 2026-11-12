@@ -14,7 +14,7 @@ It is deployed **separately** from the server it tests.
 | Part | State |
 |---|---|
 | Runner, report format, redaction | Built, unit tested |
-| `baseline` case (15 steps) | Built. Steps B06 to B14 verified against the real facade code running locally. B01 to B05 and B15 need the real proxy and HAPI and have **not** been run against them |
+| `baseline` case (15 steps) | Built. **15 of 15 pass** against a real stack (Caddy, HAPI 8.12 with PostgreSQL, and the facade) brought up with Docker Compose from a clean clone of `ohia-fhir-test-server` (2026-11-12, x86_64 sandbox, plain HTTP on `localhost`, so `ALLOW_HTTP=1`). That includes B01 to B05 and B15, which earlier had only been run against a local model and the facade code. **Not** run against the live VM, an HTTPS certificate, arm64, or a server behind a separate public name |
 | `patient-access` case (15 steps, UC07 interaction 6) | Built. Run against the real facade jar with the real data on one machine: 15 of 15 pass once the data is loaded. **Not** run through the real proxy (Caddy) or on a deployed server |
 | UC07 and UC04a cases (need a public receiver) | Not built yet |
 | Receiver, teaching site, GitHub Actions, second-VM automation | Not built yet |
