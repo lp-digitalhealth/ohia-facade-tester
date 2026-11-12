@@ -32,6 +32,18 @@ class Context:
         self.cfg = cfg
         self.http = http
         self.state: dict[str, Any] = {}  # lets a later step reuse what an earlier one found, for one run
+        self._closers: list[Callable[[], None]] = []
+
+    def on_close(self, fn: Callable[[], None]) -> None:
+        """Register cleanup (for example stopping a listener) to run when the whole run ends."""
+        self._closers.append(fn)
+
+    def close(self) -> None:
+        while self._closers:
+            try:
+                self._closers.pop()()
+            except Exception:  # cleanup must never hide the results
+                pass
 
     def call(self, method: str, path: str, *, auth: bool = False, bearer: str | None = None,
              headers: dict[str, str] | None = None, body: bytes | str | None = None) -> Exchange:
@@ -98,7 +110,10 @@ def run_case(case_id: str, ctx: Context) -> dict[str, Any]:
 
 def run_cases(case_ids: list[str], cfg: Config, http: HttpClient | None = None) -> dict[str, Any]:
     ctx = Context(cfg, http or HttpClient())
-    cases = [run_case(c, ctx) for c in case_ids]
+    try:
+        cases = [run_case(c, ctx) for c in case_ids]
+    finally:
+        ctx.close()
     steps = [s for c in cases for s in c["steps"]]
     return {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),

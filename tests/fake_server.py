@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from tests import patient_access_model as pam
+from tests.uc04a_model import JWK, Uc04aModel
 
 TOKEN = "unit-test-token-0123456789abcdef"
 
@@ -21,6 +22,7 @@ class FakeServer:
     def __init__(self, **modes: bool) -> None:
         self.modes = modes
         outer = self
+        self.uc = Uc04aModel(modes)
         self.pa = pam.build(drop_preauth=modes.get("pa_no_preauth", False), dangling_insurer=modes.get("pa_dangling", False))
 
         class Handler(BaseHTTPRequestHandler):
@@ -118,6 +120,9 @@ class FakeServer:
                     return self._send(200, {"resourceType": "CapabilityStatement", "fhirVersion": "4.0.1"})
                 if path.startswith("/fhir"):
                     if self._authed():
+                        stored = outer.uc.read("/".join(path.split("/")[2:])) if method == "GET" else None
+                        if stored is not None:
+                            return self._send(200, stored, ctype="application/fhir+json")
                         if method == "POST":
                             return self._send(201, {"resourceType": "Patient"})
                         body = {"resourceType": "Bundle", "type": "searchset", "total": 0}
@@ -129,9 +134,17 @@ class FakeServer:
                             return self._send(400, {"resourceType": "OperationOutcome"})
                         return self._send(200, {"resourceType": "Bundle", "type": "searchset", "total": 0})
                     return self._unauth()
+                if path == "/ode/receive/uc04a" and method == "POST":
+                    if not self._authed() and not m.get("uc_open_receive"):
+                        return self._unauth()
+                    status, body = outer.uc.receive(raw, base)
+                    return self._send(status, body)
                 if path.startswith("/ode"):
                     if not self._authed():
                         return self._unauth()
+                    routed = outer.uc.route(path) if method == "GET" else None
+                    if routed is not None:
+                        return self._send(routed[0], routed[1], ctype=routed[2])
                     if path == "/ode/health":
                         return self._send(200, {"status": "ok", "service": "ohia-facade"})
                     if path == "/ode/identity":
@@ -144,7 +157,7 @@ class FakeServer:
                         "token_endpoint_auth_methods_supported": ["private_key_jwt"],
                         "token_endpoint_auth_signing_alg_values_supported": ["RS384", "ES384"]})
                 if path == "/arex/jwks.json":
-                    key = {"kty": "RSA", "kid": "ohia-server-1", "alg": "RS384", "use": "sig", "n": "abc", "e": "AQAB"}
+                    key = dict(JWK)
                     if m.get("leaky_jwks"):
                         key["d"] = "secret"
                     return self._send(200, {"keys": [key]}, ctype="application/jwk-set+json")

@@ -1,0 +1,86 @@
+{
+  "id": "uc04a-send",
+  "title": "UC04a: the platform sends a teledentistry referral to the server",
+  "summary": "The tester plays the teledentistry platform (Meridian). It sends the real UC04a interaction 1 referral, with a penicillin allergy and a reference to two intraoral photos, to the server, which then calls the tester back to download the photos using ARex and SMART Backend Services. Needs a public https address for the tester (PARTNER_PUBLIC_URL). WRITES synthetic data to the server.",
+  "learn": "Most FHIR exchange is one app asking a server for data. This case is different: it is a push followed by a pull. The platform pushes a referral (a FHIR transaction Bundle) and the receiver pulls the heavy files (photos) from the platform. Large files stay out of the message, and the receiver proves who it is and checks each file's fingerprint before it trusts it. Doing this correctly is the point of the ARex (Attachments and Related EXchange) draft guide.",
+  "steps": [
+    {
+      "id": "U01",
+      "title": "The server says who it is, and publishes only its public key",
+      "expect": "GET /ode/identity (with the token) gives a client id and the signing algorithm RS384. GET /arex/jwks.json needs no token and returns public keys only.",
+      "why": "Later, the server will call YOUR server and must prove who it is. It does that by signing a short statement (a JWT, pronounced 'jot') with a private key. You check the signature with the matching PUBLIC key, which the server publishes as a JWKS (JSON Web Key Set). You must be able to fetch the public key without a password, and it must never contain the private half. Learning the client id and key id first is like asking a visitor for their name before they arrive."
+    },
+    {
+      "id": "U02",
+      "title": "The tester starts its own ARex server and checks it can be reached",
+      "expect": "The tester listens for the server, and its discovery document answers at the address the server will use (PARTNER_PUBLIC_URL).",
+      "why": "In this use case you are the teledentistry platform. Your referral points at photos on YOUR server, so the receiving server has to call you back. That means your server must be reachable from the internet at an https address. This step starts it and tests that address. If it fails here, nothing later can work; the usual cause is a missing reverse proxy or firewall rule."
+    },
+    {
+      "id": "U03",
+      "title": "Sending a referral without a token is refused",
+      "expect": "POST /ode/receive/uc04a with no Authorization header returns 401.",
+      "why": "Accepting a referral writes patient records. Even synthetic ones should not be writable by strangers. This repeats, for the write path, what baseline step B02 shows for reads."
+    },
+    {
+      "id": "U04",
+      "title": "Something that is not a transaction Bundle is refused",
+      "expect": "POST of a single Patient (not a Bundle) with a valid token returns 422 and stores nothing.",
+      "why": "A FHIR transaction Bundle is a package of resources that are saved together or not at all. The UC04a interaction 1 message is one. The server checks the shape before it stores anything. HTTP 422 means 'I understood the request but cannot process this content'."
+    },
+    {
+      "id": "U05",
+      "title": "The tester sends the real UC04a referral",
+      "expect": "POST of the interaction 1 transaction Bundle to /ode/receive/uc04a returns 200 and a receipt that says accepted.",
+      "why": "This is the heart of the use case. Sarah Okonkwo had a virtual dental visit. The platform sends her referral: the reason (tooth #9, suspected pulpitis), her penicillin allergy, a note that she has no dental home, and a reference to two photos. The photos are NOT inside the Bundle; they are listed in an ARex manifest (a FHIR List) with a SHA-256 fingerprint for each. A receipt is the server's account of what it did."
+    },
+    {
+      "id": "U06",
+      "title": "The server stored the resources and recognised the referral",
+      "expect": "The receipt reports that the Bundle's entries were stored (the Subscription may be left out), the referral id REF-2026-UC04A-001 and the manifest id.",
+      "why": "Storing is only half the job. The server must understand what it received: which referral this is (a business identifier, urn:ohia:referral-id) and which manifest lists the photos. Those two values link the pieces together later."
+    },
+    {
+      "id": "U07",
+      "title": "The server proved who it is before getting the photos",
+      "expect": "The tester verified one RS384 signed token request, saw one discovery request, one token request, one read of the published manifest and two image requests, and the token scope included system/Binary.r.",
+      "why": "This is SMART Backend Services, the standard way one server authenticates to another with no human present. The caller (the receiving server) finds the token address by reading discovery, signs a JWT with its private key, and exchanges it for a short-lived access token. Only then can it read the manifest and the photos. The tester checked the signature with the public key from step U01, so this proves the real key was used."
+    },
+    {
+      "id": "U08",
+      "title": "Both photos were downloaded and verified",
+      "expect": "Both photos have the status 'saved', the digests in the receipt are the ones the Bundle declared, and both are marked viewable.",
+      "why": "The manifest lists a SHA-256 digest for each photo: a fingerprint of its exact bytes. After downloading, the server recomputes the fingerprint and saves the file only if it matches. This stops a corrupted or swapped image from ever being shown to a clinician."
+    },
+    {
+      "id": "U09",
+      "title": "The server reported only the gaps we already know about",
+      "expect": "Every finding in the receipt is one of SIGNATURE_PLACEHOLDER, MANIFEST_EXPIRED_PER_PAYLOAD or SUBSCRIPTION_NOT_STORED.",
+      "why": "The server does not stop on a problem it can work through; it names it as a finding. The sample data has three known imperfections: the manifest signature is a placeholder (the draft spec does not yet say how to sign), the sample's expiry date has passed, and real HAPI needs an extra extension on the sample Subscription. A NEW finding means something changed and is worth a look."
+    },
+    {
+      "id": "U10",
+      "title": "The receipt can be read back",
+      "expect": "GET /ode/receipts/{id} with the token returns the same receipt.",
+      "why": "A receipt is the record a clinician or organiser opens later (the server's /viewer page shows it). Being able to fetch it by id is what makes the result auditable instead of a one-time response."
+    },
+    {
+      "id": "U11",
+      "title": "The referral and the allergy are in the FHIR store",
+      "expect": "GET /fhir/AllergyIntolerance/allergyintolerance-penicillin shows penicillin allergy with a moderate reaction, and GET /fhir/ServiceRequest/servicerequest-referral returns the referral.",
+      "why": "Receiving is only useful if the data can be read again through the normal FHIR API. The allergy is the clinically important detail in this referral: the receiving dentist must not prescribe penicillin. The tester reads it back as any app would."
+    },
+    {
+      "id": "U12",
+      "title": "The photos are served back byte for byte",
+      "expect": "GET /ode/receipts/{id}/images/{fileKey} returns exactly the bytes the tester sent, as image/jpeg.",
+      "why": "The final check that the whole chain worked: what the clinician sees is exactly what the platform sent, not a re-encoded or damaged copy."
+    },
+    {
+      "id": "U13",
+      "title": "A tampered photo is caught and never shown",
+      "expect": "With one bit of each photo flipped in transit, the receipt reports 'digest-mismatch' for both, includes a DIGEST_MISMATCH finding, and the photos are not served.",
+      "why": "A test that only proves success proves little. This step makes the tester misbehave on purpose: its ARex server alters every photo by one bit. A correct receiver notices because the SHA-256 no longer matches, refuses to save it, and says so. This is the control that shows U08 is real."
+    }
+  ]
+}
