@@ -43,6 +43,9 @@ class EachCheckFailsWhenItsRuleIsBroken(unittest.TestCase):
     def test_open_fhir(self):
         self.check_mode({"B02", "B04", "B05"}, open_fhir=True)
 
+    def test_a_plain_text_401_on_fhir(self):
+        self.check_mode({"B02", "B04", "B05"}, plain_fhir_401=True)
+
     def test_issuer_points_at_localhost(self):
         self.check_mode({"B08", "B14"}, localhost=True)
 

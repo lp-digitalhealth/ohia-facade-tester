@@ -44,6 +44,12 @@ class FakeServer:
             def _unauth(self):
                 self._send(401, b"Unauthorized", {"WWW-Authenticate": "Bearer"}, "text/plain")
 
+            def _unauth_fhir(self):
+                if outer.modes.get("plain_fhir_401"):
+                    return self._unauth()
+                self._send(401, {"resourceType": "OperationOutcome", "issue": [{"severity": "error", "code": "login"}]},
+                           {"WWW-Authenticate": "Bearer"}, "application/fhir+json")
+
             def do_GET(self):
                 self._route("GET")
 
@@ -128,7 +134,7 @@ class FakeServer:
                         if method == "POST":
                             return self._send(400, {"resourceType": "OperationOutcome"})
                         return self._send(200, {"resourceType": "Bundle", "type": "searchset", "total": 0})
-                    return self._unauth()
+                    return self._unauth_fhir()
                 if path.startswith("/ode"):
                     if not self._authed():
                         return self._unauth()
