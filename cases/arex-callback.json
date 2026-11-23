@@ -1,0 +1,62 @@
+{
+  "id": "arex-callback",
+  "title": "ARex callback: a client sends a referral and the server calls back for the images (UC04a)",
+  "summary": "Plays the client. Sends the UC04a referral with image links that point at a small ARex server this harness controls, then checks what the test server answered, what its receipt says, and what the harness's own server actually saw. This case WRITES: it stores the sample referral on the server and leaves receipts there, so use it only on a test server.",
+  "learn": "Sending a referral is only half of the exchange. The referral carries a pointer to the images, not the images. After it answers, the receiving server has to call BACK to the sender's server, prove who it is with a signed request, and download each image. That second leg is called ARex retrieval. It can fail for reasons that have nothing to do with the first leg: the sender's server may not know the receiver, may be slow, may serve the wrong bytes. A good test therefore checks three views at once: the answer the sender got, the receipt the receiver recorded, and what the sender's own server saw. When all three agree, the callback really worked.",
+  "steps": [
+    {
+      "id": "R01",
+      "title": "The harness's ARex server is up and describes itself",
+      "expect": "GET <receiver>/arex/.well-known/smart-configuration returns 200 with a token_endpoint under the receiver's own address that accepts RS384.",
+      "why": "The test server finds a sender's ARex server from the image links in the referral. It then reads a discovery document there to learn where to ask for a token. This step checks that this harness is a proper stand-in for a sender: it must be reachable at the address the referral will name. If the test server is on another machine, that address must be public. The step also clears the receiver's log so this run starts clean."
+    },
+    {
+      "id": "R02",
+      "title": "The referral is answered at once with a FHIR transaction-response",
+      "expect": "POST /ode/receive/uc04a returns 200 within seconds, as application/fhir+json, with a Bundle of type transaction-response, and headers X-Receipt-Id and Link (rel=receipt) that say where the result will be.",
+      "why": "A referral is posted as a transaction Bundle, and FHIR defines the answer to a transaction: a transaction-response Bundle (or an OperationOutcome if it failed). Any FHIR client library can read that. The server must not make the sender wait for the callback: the callback calls the sender's own server, which may be slow, and a sender whose request times out sees nothing even though the referral was stored. The headers tell the sender where to read the outcome of the callback later."
+    },
+    {
+      "id": "R03",
+      "title": "The callback finishes and the receipt says so",
+      "expect": "GET /ode/receipts/{id} moves from state 'pending' to 'complete' within 90 seconds, with accepted true.",
+      "why": "Because the callback runs after the answer, the receipt starts as 'pending' and the sender polls it. 'complete' means the callback ended, whether it succeeded or not. 'failed' means it crashed and 'interrupted' means the server restarted during it. A receipt stuck in 'pending' would mean the callback never ended, which a sender could not tell from one still running."
+    },
+    {
+      "id": "R04",
+      "title": "The server proved who it is to the harness's ARex server",
+      "expect": "The receiver's own log shows the discovery request, a token request that it accepted, and a signed assertion it verified with the server's public key and did not reject.",
+      "why": "To fetch images the server has to ask the sender for a token. It does so with a short-lived signed message, an assertion, signed with its private key (RS384). The sender checks the signature using the matching public key that the server publishes at /arex/jwks.json. This step reads the receiver's side of that handshake, which the receipt alone cannot prove: the receipt is the server's own account, while the receiver's log is an independent witness."
+    },
+    {
+      "id": "R05",
+      "title": "The server read the manifest",
+      "expect": "The receiver's log shows a successful GET /arex/List/<manifest id> with the token.",
+      "why": "The manifest is the list of what the sender is offering, with an expiry and a state. The server reads the sender's published copy and compares it with the copy embedded in the referral. If the published manifest is missing, retracted or not current, a careful receiver stops. This step shows the server really asked."
+    },
+    {
+      "id": "R06",
+      "title": "Every image was downloaded and verified",
+      "expect": "The receipt lists every image with status 'saved' and a SHA-256 equal to the declared one, the pull did not stop early, only normal ARex-draft findings appear, and the receiver served exactly that many downloads.",
+      "why": "Each image link comes with a size and a SHA-256 digest in the manifest. The server recomputes the digest on what it received and saves the file only if it matches, so a corrupted or swapped file can never be shown as the real one. Findings such as SIGNATURE_PLACEHOLDER are normal while ARex is a draft: the sample's manifest signature is a placeholder and the server does not verify manifest signatures yet. Anything else is reported."
+    },
+    {
+      "id": "R07",
+      "title": "The saved images can be read back",
+      "expect": "GET /ode/receipts/{id}/images/{fileKey} returns each image with the same bytes the sender declared, and the receipt marks it viewable.",
+      "why": "Saving is not enough: a person has to be able to see the image. The server serves an image inline only if its bytes really are a JPEG or PNG, decided from the bytes and not from the label the sender gave it, so a sender cannot plant a file that would run as a web page. This step reads each image back and compares its bytes with what was declared."
+    },
+    {
+      "id": "R08",
+      "title": "A tampered image is not saved",
+      "expect": "With the receiver changing one byte of every image, the referral is still stored, no image is saved, and the receipt reports DIGEST_MISMATCH.",
+      "why": "A test that only passes when everything is perfect proves little. Here the harness deliberately serves wrong bytes. A safe receiver must notice that the digest no longer matches, refuse to save those bytes and say so, while still keeping the referral itself, because the clinical content arrived correctly and only the images failed."
+    },
+    {
+      "id": "R09",
+      "title": "A refused token stops the pull and is reported",
+      "expect": "With the receiver refusing every token request, the referral is still stored, the receipt reports TOKEN_REFUSED and says why the pull stopped, and no image is downloaded.",
+      "why": "The commonest real failure is that the sender has not registered the server's key, so its ARex server refuses the token. A good receiver stops at once (it must not keep trying other requests without permission), keeps the referral, and names the cause so the person onboarding the sender knows what to fix. Seeing TOKEN_REFUSED in a receipt almost always means the sender has not registered the server's client id and key."
+    }
+  ]
+}
