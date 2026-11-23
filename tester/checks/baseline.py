@@ -28,6 +28,14 @@ def _bearer_challenge(ex: Exchange, problems: list[str]) -> None:
         problems.append("The 401 should carry a 'WWW-Authenticate: Bearer' header so a client knows how to authenticate.")
 
 
+def _fhir_error_body(ex: Exchange, problems: list[str]) -> None:
+    """A FHIR server explains a refusal with an OperationOutcome, so a FHIR client can read it."""
+    if "fhir+json" not in (ex.header("Content-Type") or "").lower():
+        problems.append("The 401 should be sent as application/fhir+json, so a FHIR client can read it.")
+    if (ex.json() or {}).get("resourceType") != "OperationOutcome":
+        problems.append("The 401 body should be an OperationOutcome (a plain-text refusal is not FHIR).")
+
+
 @check("B01")
 def metadata_is_open(ctx: Context) -> Outcome:
     ex = ctx.call("GET", "/fhir/metadata", headers={"Accept": "application/fhir+json"})
@@ -47,6 +55,7 @@ def fhir_needs_token(ctx: Context) -> Outcome:
     problems: list[str] = []
     if _status(ex, 401, problems):
         _bearer_challenge(ex, problems)
+        _fhir_error_body(ex, problems)
     return Outcome(ex, problems)
 
 
@@ -64,7 +73,8 @@ def fhir_with_token(ctx: Context) -> Outcome:
 def wrong_token_refused(ctx: Context) -> Outcome:
     ex = ctx.call("GET", "/fhir/Patient", bearer="wrong-" + ctx.cfg.api_token, headers={"Accept": "application/fhir+json"})
     problems: list[str] = []
-    _status(ex, 401, problems)
+    if _status(ex, 401, problems):
+        _fhir_error_body(ex, problems)
     return Outcome(ex, problems)
 
 
@@ -77,6 +87,7 @@ def write_needs_token(ctx: Context) -> Outcome:
     problems: list[str] = []
     if _status(ex, 401, problems):
         _bearer_challenge(ex, problems)
+        _fhir_error_body(ex, problems)
     return Outcome(ex, problems)
 
 

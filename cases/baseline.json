@@ -13,8 +13,8 @@
     {
       "id": "B02",
       "title": "Reading patient data without a token is refused",
-      "expect": "GET /fhir/Patient with no Authorization header returns 401 and a WWW-Authenticate: Bearer challenge.",
-      "why": "Patient is a FHIR resource type: one kind of record. Searching /fhir/Patient asks for patient records. Even in a test server you do not want strangers reading or filling it, so everything except /metadata needs a bearer token. HTTP status 401 means 'who are you?'. The WWW-Authenticate header tells the client which kind of credential to send."
+      "expect": "GET /fhir/Patient with no Authorization header returns 401 with a WWW-Authenticate: Bearer challenge, and the body is a FHIR OperationOutcome sent as application/fhir+json.",
+      "why": "Patient is a FHIR resource type: one kind of record. Searching /fhir/Patient asks for patient records. Even in a test server you do not want strangers reading or filling it, so everything except /metadata needs a bearer token. HTTP status 401 means 'who are you?'. The WWW-Authenticate header tells the client which kind of credential to send. A FHIR server explains the refusal as an OperationOutcome (a small JSON resource that describes a problem), so a FHIR client library can read it. A plain-text refusal is a finding."
     },
     {
       "id": "B03",
@@ -25,13 +25,13 @@
     {
       "id": "B04",
       "title": "A wrong token is refused",
-      "expect": "A request with an incorrect bearer token returns 401.",
+      "expect": "A request with an incorrect bearer token returns 401 with an OperationOutcome body (application/fhir+json).",
       "why": "Checking that the right token works is only half the test. A server that accepted any token, or one that only checked the first few characters, would pass B03 and still be wide open. This step sends a token that is deliberately wrong."
     },
     {
       "id": "B05",
       "title": "Writing without a token is refused (and stores nothing)",
-      "expect": "POST /fhir/Patient with no token returns 401.",
+      "expect": "POST /fhir/Patient with no token returns 401 with a Bearer challenge and an OperationOutcome body (application/fhir+json).",
       "why": "Reading and writing are separate risks. In FHIR, POST to a resource type creates a record. The request body deliberately names the wrong resource type, so even a badly configured open server would reject it without storing anything. Running this test can never put data on your server."
     },
     {
