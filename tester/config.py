@@ -16,6 +16,9 @@ class Config:
     base_url: str  # e.g. https://203-0-113-7.sslip.io  (no trailing slash, no /fhir)
     api_token: str = field(repr=False)  # the server's shared bearer token; never printed
     allow_http: bool = False  # tests against a local server only
+    receiver_url: str = ""  # public base of the ARex receiver the server calls back to (the arex-callback case)
+    receiver_control_token: str = field(default="", repr=False)  # lets the test read and steer a remote receiver
+    receiver_listen: str = ""  # host:port for an in-process receiver (default 127.0.0.1, any free port)
 
     def url(self, path: str) -> str:
         return self.base_url + (path if path.startswith("/") else "/" + path)
@@ -34,4 +37,9 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         raise ConfigError("BASE_URL must be the server root, without /fhir.")
     if not base.startswith("https://") and not (allow_http and base.startswith("http://")):
         raise ConfigError("BASE_URL must start with https:// (set ALLOW_HTTP=1 only for a local test server).")
-    return Config(base_url=base, api_token=token, allow_http=allow_http)
+    receiver_url = (env.get("RECEIVER_URL") or "").strip().rstrip("/")
+    if receiver_url and not receiver_url.startswith("https://") and not (allow_http and receiver_url.startswith("http://")):
+        raise ConfigError("RECEIVER_URL must start with https:// (set ALLOW_HTTP=1 only for a local test).")
+    return Config(base_url=base, api_token=token, allow_http=allow_http, receiver_url=receiver_url,
+                  receiver_control_token=(env.get("RECEIVER_CONTROL_TOKEN") or "").strip(),
+                  receiver_listen=(env.get("RECEIVER_LISTEN") or "").strip())

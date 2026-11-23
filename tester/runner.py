@@ -32,11 +32,25 @@ class Context:
         self.cfg = cfg
         self.http = http
         self.state: dict[str, Any] = {}  # lets a later step reuse what an earlier one found, for one run
+        self._closers: list[Callable[[], None]] = []
 
     def call(self, method: str, path: str, *, auth: bool = False, bearer: str | None = None,
              headers: dict[str, str] | None = None, body: bytes | str | None = None) -> Exchange:
         token = self.cfg.api_token if auth else bearer
         return self.http.request(method, self.cfg.url(path), headers=headers, body=body, bearer=token)
+
+
+    def on_close(self, fn: Callable[[], None]) -> None:
+        """Run `fn` when the run ends (for example, to stop a receiver the run started)."""
+        self._closers.append(fn)
+
+    def close(self) -> None:
+        for fn in reversed(self._closers):
+            try:
+                fn()
+            except Exception:  # shutting down must never hide the report
+                pass
+        self._closers.clear()
 
 
 Check = Callable[[Context], Outcome]
@@ -68,7 +82,7 @@ def run_case(case_id: str, ctx: Context) -> dict[str, Any]:
     from . import checks  # noqa: F401
 
     case = load_case(case_id)
-    secrets = [ctx.cfg.api_token]
+    secrets = [ctx.cfg.api_token, ctx.cfg.receiver_control_token]
     steps = []
     for spec in case["steps"]:
         fn = REGISTRY.get(spec["id"])
@@ -98,7 +112,10 @@ def run_case(case_id: str, ctx: Context) -> dict[str, Any]:
 
 def run_cases(case_ids: list[str], cfg: Config, http: HttpClient | None = None) -> dict[str, Any]:
     ctx = Context(cfg, http or HttpClient())
-    cases = [run_case(c, ctx) for c in case_ids]
+    try:
+        cases = [run_case(c, ctx) for c in case_ids]
+    finally:
+        ctx.close()
     steps = [s for c in cases for s in c["steps"]]
     return {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),

@@ -18,11 +18,17 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="run cases against BASE_URL using API_TOKEN (both from the environment)")
     run.add_argument("--case", action="append", help="case id; repeat for several (default: all)")
     run.add_argument("--out", help="write the JSON report here")
+    rcv = sub.add_parser("receiver", help="run the ARex receiver the arex-callback case calls back to, on a public host")
+    rcv.add_argument("--listen", default="0.0.0.0:8080", help="host:port to listen on (default 0.0.0.0:8080)")
+    rcv.add_argument("--public-url", required=True, help="the https address the test server will use to reach this receiver")
     args = parser.parse_args(argv)
 
     if args.command == "list":
         print("\n".join(available_cases()))
         return 0
+
+    if args.command == "receiver":
+        return _run_receiver(args)
 
     try:
         cfg = from_env()
@@ -40,6 +46,33 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     _print(report)
     return 0 if report["summary"]["failed"] == 0 else 1
+
+
+def _run_receiver(args) -> int:
+    import os
+    import time
+
+    from .receiver import ArexReceiver, ReceiverError
+
+    base = (os.environ.get("BASE_URL") or "").strip().rstrip("/")
+    token = (os.environ.get("RECEIVER_CONTROL_TOKEN") or "").strip()
+    if not base:
+        print("Configuration error: BASE_URL (the test server) is required so the receiver can read its public key.", file=sys.stderr)
+        return 2
+    host, _, port = args.listen.rpartition(":")
+    try:
+        receiver = ArexReceiver(server_base=base, listen=(host or "0.0.0.0", int(port)), public_url=args.public_url,
+                                control_token=token or None).start()
+    except (ReceiverError, ValueError, OSError) as e:
+        print("Receiver error: " + str(e), file=sys.stderr)
+        return 2
+    print(f"ARex receiver listening on {args.listen}, advertised as {receiver.public_url}. Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        receiver.stop()
+    return 0
 
 
 def _print(report: dict) -> None:
